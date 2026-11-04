@@ -3,9 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Canvas Video Generator (Ptero API)</title>
-    <!-- Подключаем Puter.js для обхода возможных блокировок CORS -->
-    <script src="https://js.puter.com/v2/"></script>
+    <title>AI Canvas Video Generator (Ptero без Puter)</title>
     <style>
         body { font-family: sans-serif; background: #111; color: #eee; padding: 20px; max-width: 900px; margin: auto; }
         textarea { width: 100%; height: 80px; background: #222; color: #eee; border: 1px solid #444; padding: 10px; border-radius: 6px; font-size: 16px; }
@@ -26,10 +24,10 @@
 </head>
 <body>
     <h1>🎬 ИИ Генератор Видео (Ptero)</h1>
-    <p>Вставьте ваш API-ключ Ptero. Он сохранится в браузере.</p>
+    <p>Вставьте ваш API-ключ Ptero. Ключ сохраняется в памяти браузера.</p>
 
     <div class="controls" style="margin-bottom: 10px;">
-        <input type="password" id="pteroKey" placeholder="Вставьте ваш Ptero API Key">
+        <input type="password" id="pteroKey" placeholder="Вставьте ваш Ptero API Key (sk-...)">
     </div>
 
     <textarea id="prompt" placeholder="Опишите анимацию...">Рыжий кот сидит на траве, виляет хвостом, на фоне ночное небо со звездами.</textarea>
@@ -74,16 +72,23 @@
         const preview = document.getElementById('preview');
         const downloadBtn = document.getElementById('downloadBtn');
 
-        pteroKeyInput.value = localStorage.getItem('ptero_api_key') || '';
+        // Пытаемся загрузить ключ, если страница открыта через http/https
+        try {
+            pteroKeyInput.value = localStorage.getItem('ptero_api_key') || '';
+        } catch(e) {
+            console.log("localStorage недоступен (вы открыли файл локально), ключ придется вводить каждый раз.");
+        }
 
         let animationFrameId = null;
         let drawFrame = () => {};
 
-        // --- 1. ЗАПРОС К PTERO (С тайм-аутом и Puter.js) ---
+        // --- 1. ЗАПРОС К PTERO (через CORS-прокси) ---
         async function getAnimationCode(userPrompt) {
             const apiKey = pteroKeyInput.value.trim();
             if (!apiKey) throw new Error('Введите ваш Ptero API Key.');
-            localStorage.setItem('ptero_api_key', apiKey);
+            
+            // Сохраняем ключ (если браузер разрешает)
+            try { localStorage.setItem('ptero_api_key', apiKey); } catch(e) {}
 
             const quality = qualitySelect.value;
             const selectedModel = modelSelect.value;
@@ -107,19 +112,17 @@ CRITICAL FOR HIGH QUALITY:
             const systemPrompt = `You are an expert Creative Coder. Return ONLY raw JavaScript code. NO markdown, NO explanations.\n${rules}\nUser prompt: ${userPrompt}`;
 
             const pteroUrl = 'https://ptero.pro/wp-json/mlp/v1/chat';
+            
+            // Используем corsproxy.io для обхода блокировки браузера
+            const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(pteroUrl)}`;
 
-            // Создаем контроллер для отмены запроса через 20 секунд
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 20000);
 
-            console.log("Отправка запроса к Ptero...");
+            console.log("Отправка запроса к Ptero через прокси...");
 
             try {
-                // Используем puter.net.fetch, если прямой fetch заблокирован (CORS)
-                // Если puter не загрузился, используем обычный fetch
-                const fetchFunc = (typeof puter !== 'undefined' && puter.net) ? puter.net.fetch : fetch;
-                
-                const response = await fetchFunc(pteroUrl, {
+                const response = await fetch(proxyUrl, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -134,7 +137,7 @@ CRITICAL FOR HIGH QUALITY:
                     signal: controller.signal
                 });
 
-                clearTimeout(timeoutId); // Отменяем тайм-аут, если ответ пришел
+                clearTimeout(timeoutId);
                 console.log("Ответ получен, статус:", response.status);
 
                 if (!response.ok) {
@@ -152,14 +155,13 @@ CRITICAL FOR HIGH QUALITY:
             } catch (e) {
                 clearTimeout(timeoutId);
                 if (e.name === 'AbortError') {
-                    throw new Error('Сервер Ptero не ответил за 20 секунд. Возможно, модель перегружена или ключ недействителен.');
+                    throw new Error('Сервер Ptero не ответил за 20 секунд.');
                 }
-                console.error("Детали ошибки:", e);
                 throw new Error(`Ошибка запроса: ${e.message}`);
             }
         }
 
-        // --- 2. БЕЗОПАСНАЯ КОМПИЛЯЦИЯ ---
+        // --- 2. КОМПИЛЯЦИЯ ---
         function compileCode(code) {
             try {
                 const func = new Function('t', 'canvas', 'ctx', code);
@@ -225,7 +227,7 @@ CRITICAL FOR HIGH QUALITY:
             if (animationFrameId) cancelAnimationFrame(animationFrameId);
 
             try {
-                statusEl.textContent = `🤖 Модель ${modelSelect.value} пишет код... (тайм-аут 20 сек)`;
+                statusEl.textContent = `🤖 Модель ${modelSelect.value} пишет код...`;
                 const code = await getAnimationCode(userPrompt);
                 console.log('Сгенерированный код:\n', code);
 
