@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Canvas Video Generator (Ptero API)</title>
+    <!-- Подключаем Puter.js для обхода возможных блокировок CORS -->
+    <script src="https://js.puter.com/v2/"></script>
+    <style>
+        body { font-family: sans-serif; background: #111; color: #eee; padding: 20px; max-width: 900px; margin: auto; }
+        textarea { width: 100%; height: 80px; background: #222; color: #eee; border: 1px solid #444; padding: 10px; border-radius: 6px; font-size: 16px; }
+        .controls { display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap; align-items: center; }
+        select, input { padding: 10px; background: #222; color: #fff; border: 1px solid #444; border-radius: 6px; font-size: 16px; }
+        input { flex: 1; min-width: 250px; }
+        button { padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 16px; font-weight: bold; transition: 0.2s; }
+        button:hover { background: #0056b3; }
+        button:disabled { background: #555; cursor: not-allowed; }
+        #randomBtn { background: #8e44ad; }
+        #randomBtn:hover { background: #732d91; }
+        #status { margin: 15px 0; color: #00ffcc; white-space: pre-wrap; font-family: monospace; font-size: 14px; }
+        #canvas-container { position: relative; width: 100%; background: #000; border-radius: 8px; overflow: hidden; border: 1px solid #333; margin-top: 10px; }
+        canvas { display: block; width: 100%; height: auto; }
+        video { width: 100%; margin-top: 15px; border-radius: 8px; display: none; border: 1px solid #333; }
+        .download-btn { background: #28a745; margin-top: 10px; display: none; text-decoration: none; padding: 10px 20px; border-radius: 6px; color: white; font-weight: bold; text-align: center; }
+    </style>
+</head>
+<body>
+    <h1>🎬 ИИ Генератор Видео (Ptero)</h1>
+    <p>Вставьте ваш API-ключ Ptero. Он сохранится в браузере.</p>
+
+    <div class="controls" style="margin-bottom: 10px;">
+        <input type="password" id="pteroKey" placeholder="Вставьте ваш Ptero API Key">
+    </div>
+
+    <textarea id="prompt" placeholder="Опишите анимацию...">Рыжий кот сидит на траве, виляет хвостом, на фоне ночное небо со звездами.</textarea>
+    
+    <div class="controls">
+        <select id="modelSelect">
+            <option value="deepseek-v4">DeepSeek V4</option>
+            <option value="deepseek-chat">DeepSeek Chat</option>
+            <option value="qwen3.8-27b">Qwen 3.8 27B</option>
+            <option value="mistral-large-3">Mistral Large 3</option>
+            <option value="gpt-oss-20b">GPT OSS 20B</option>
+        </select>
+        <select id="qualitySelect">
+            <option value="high" selected>🔥 Высокая детализация</option>
+            <option value="low">⚡ Простая</option>
+        </select>
+        <button id="generateBtn">Сгенерировать и Записать</button>
+        <button id="testBtn" style="background: #ff9800;">Тест (без записи)</button>
+        <button id="randomBtn">🎲 Идея</button>
+    </div>
+
+    <div id="status">Ожидание...</div>
+
+    <div id="canvas-container">
+        <canvas id="canvas" width="800" height="450"></canvas>
+    </div>
+    
+    <video id="preview" controls></video>
+    <a id="downloadBtn" class="download-btn" download="ai_video.webm">⬇️ Скачать видео</a>
+
+    <script>
+        const promptInput = document.getElementById('prompt');
+        const pteroKeyInput = document.getElementById('pteroKey');
+        const modelSelect = document.getElementById('modelSelect');
+        const qualitySelect = document.getElementById('qualitySelect');
+        const generateBtn = document.getElementById('generateBtn');
+        const testBtn = document.getElementById('testBtn');
+        const randomBtn = document.getElementById('randomBtn');
+        const statusEl = document.getElementById('status');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const preview = document.getElementById('preview');
+        const downloadBtn = document.getElementById('downloadBtn');
+
+        pteroKeyInput.value = localStorage.getItem('ptero_api_key') || '';
+
+        let animationFrameId = null;
+        let drawFrame = () => {};
+
+        // --- 1. ЗАПРОС К PTERO (С тайм-аутом и Puter.js) ---
+        async function getAnimationCode(userPrompt) {
+            const apiKey = pteroKeyInput.value.trim();
+            if (!apiKey) throw new Error('Введите ваш Ptero API Key.');
+            localStorage.setItem('ptero_api_key', apiKey);
+
+            const quality = qualitySelect.value;
+            const selectedModel = modelSelect.value;
+            
+            let rules = `
+CONTEXT:
+- canvas is 800x450. ctx is CanvasRenderingContext2D. t is time in SECONDS (0 to 4).
+- DO NOT wrap your code in a function. Just write the statements.
+- Start with: ctx.clearRect(0, 0, canvas.width, canvas.height);
+- Use "t" to animate. (e.g., x = 100 + Math.sin(t) * 50)
+`;
+            if (quality === 'high') {
+                rules += `
+CRITICAL FOR HIGH QUALITY:
+1. BACKGROUND: Fill the ENTIRE canvas. Use for-loops.
+2. COMPLEX CHARACTERS: Use paths (ctx.beginPath, ctx.quadraticCurveTo).
+3. DETAILS: Add shadows, gradients.
+`;
+            }
+
+            const systemPrompt = `You are an expert Creative Coder. Return ONLY raw JavaScript code. NO markdown, NO explanations.\n${rules}\nUser prompt: ${userPrompt}`;
+
+            const pteroUrl = 'https://ptero.pro/wp-json/mlp/v1/chat';
+
+            // Создаем контроллер для отмены запроса через 20 секунд
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 20000);
+
+            console.log("Отправка запроса к Ptero...");
+
+            try {
+                // Используем puter.net.fetch, если прямой fetch заблокирован (CORS)
+                // Если puter не загрузился, используем обычный fetch
+                const fetchFunc = (typeof puter !== 'undefined' && puter.net) ? puter.net.fetch : fetch;
+                
+                const response = await fetchFunc(pteroUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${apiKey}`
+                    },
+                    body: JSON.stringify({
+                        model: selectedModel,
+                        messages: [{ role: 'user', content: systemPrompt }],
+                        temperature: 0.7,
+                        max_tokens: 4000
+                    }),
+                    signal: controller.signal
+                });
+
+                clearTimeout(timeoutId); // Отменяем тайм-аут, если ответ пришел
+                console.log("Ответ получен, статус:", response.status);
+
+                if (!response.ok) {
+                    const errText = await response.text();
+                    throw new Error(`Ошибка Ptero (${response.status}): ${errText.substring(0, 100)}`);
+                }
+
+                const data = await response.json();
+                let code = data.choices?.[0]?.message?.content || data.response || '';
+                code = code.replace(/```javascript|```js|```/gi, '').trim();
+                
+                if (!code) throw new Error('Модель вернула пустой код');
+                return code;
+
+            } catch (e) {
+                clearTimeout(timeoutId);
+                if (e.name === 'AbortError') {
+                    throw new Error('Сервер Ptero не ответил за 20 секунд. Возможно, модель перегружена или ключ недействителен.');
+                }
+                console.error("Детали ошибки:", e);
+                throw new Error(`Ошибка запроса: ${e.message}`);
+            }
+        }
+
+        // --- 2. БЕЗОПАСНАЯ КОМПИЛЯЦИЯ ---
+        function compileCode(code) {
+            try {
+                const func = new Function('t', 'canvas', 'ctx', code);
+                func(0, canvas, ctx);
+                return func;
+            } catch (e) {
+                throw new Error(`Код с ошибкой: ${e.message}.`);
+            }
+        }
+
+        // --- 3. Запуск анимации ---
+        function startAnimation(durationMs, onFinish) {
+            if (animationFrameId) cancelAnimationFrame(animationFrameId);
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            const startTime = performance.now();
+            function loop() {
+                const elapsed = performance.now() - startTime;
+                if (durationMs && elapsed >= durationMs) {
+                    if (onFinish) onFinish();
+                    return;
+                }
+                try { drawFrame(elapsed / 1000, canvas, ctx); } catch (e) {}
+                animationFrameId = requestAnimationFrame(loop);
+            }
+            loop();
+        }
+
+        // --- 4. Запись видео ---
+        async function recordVideo(durationMs = 4000) {
+            return new Promise((resolve, reject) => {
+                ctx.fillStyle = '#000';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                try { drawFrame(0.01, canvas, ctx); } catch(e){}
+
+                const stream = canvas.captureStream(30);
+                const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm';
+                
+                const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 5000000 });
+                const chunks = [];
+
+                recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+                recorder.onstop = () => resolve(new Blob(chunks, { type: mimeType }));
+                recorder.onerror = reject;
+
+                setTimeout(() => {
+                    recorder.start();
+                    startAnimation(durationMs, () => setTimeout(() => recorder.stop(), 100));
+                }, 200);
+            });
+        }
+
+        // --- Главный обработчик ---
+        generateBtn.addEventListener('click', async () => {
+            const userPrompt = promptInput.value.trim();
+            if (!userPrompt) return;
+
+            generateBtn.disabled = true;
+            testBtn.disabled = true;
+            downloadBtn.style.display = 'none';
+            preview.style.display = 'none';
+            if (animationFrameId) cancelAnimationFrame(animationFrameId);
+
+            try {
+                statusEl.textContent = `🤖 Модель ${modelSelect.value} пишет код... (тайм-аут 20 сек)`;
+                const code = await getAnimationCode(userPrompt);
+                console.log('Сгенерированный код:\n', code);
+
+                drawFrame = compileCode(code);
+                statusEl.textContent = '🎥 Запись видео...';
+                const blob = await recordVideo(4000);
+
+                const url = URL.createObjectURL(blob);
+                preview.src = url;
+                preview.style.display = 'block';
+                downloadBtn.href = url;
+                downloadBtn.style.display = 'inline-block';
+                statusEl.textContent = '✅ Успешно! Видео создано.';
+
+            } catch (e) {
+                console.error(e);
+                statusEl.textContent = '❌ ' + e.message;
+            } finally {
+                generateBtn.disabled = false;
+                testBtn.disabled = false;
+            }
+        });
+
+        // Тест
+        testBtn.addEventListener('click', async () => {
+            const userPrompt = promptInput.value.trim();
+            if (!userPrompt) return;
+            
+            generateBtn.disabled = true;
+            testBtn.disabled = true;
+            try {
+                statusEl.textContent = `🤖 Модель ${modelSelect.value} пишет код...`;
+                const code = await getAnimationCode(userPrompt);
+                console.log('Сгенерированный код:\n', code);
+                drawFrame = compileCode(code);
+                statusEl.textContent = '▶️ Анимация...';
+                startAnimation(5000, () => statusEl.textContent = '✅ Тест завершен.');
+            } catch (e) {
+                statusEl.textContent = '❌ ' + e.message;
+            } finally {
+                generateBtn.disabled = false;
+                testBtn.disabled = false;
+            }
+        });
+
+        // Случайная идея
+        const ideas = [
+            "Рыжий кот сидит на траве, виляет хвостом, на фоне ночное небо со звездами.",
+            "Космический корабль летит сквозь астероиды, стреляя лазерами.",
+            "Пульсирующее сердце из светящихся частиц.",
+            "Дождь из зеленых символов (Матрица).",
+            "Подводный мир: плавают светящиеся медузы."
+        ];
+        randomBtn.addEventListener('click', () => {
+            promptInput.value = ideas[Math.floor(Math.random() * ideas.length)];
+        });
+    </script>
+</body>
+</html>
